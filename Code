@@ -1,358 +1,188 @@
 import gradio as gr
-from typing import List, Tuple, Dict, Any
+import time
+
+# =========================
+# SCORING FUNCTION
+# =========================
+def compute_score(applicant):
+    gpa = applicant["gpa"]
+    hours = min(applicant["hours"], 200)
+    essay = applicant["essay"]
+
+    return round((gpa / 4.0) * 40 + (hours / 200) * 20 + (essay / 100) * 40, 2)
 
 
-# -----------------------------
-# Scoring
-# -----------------------------
-# We compute a final score from GPA, volunteer hours, and essay score.
-#
-# GPA is scaled to 100 by multiplying by 25 (since 4.0 turns into 100).
-# Volunteer hours are capped at 100 for fairness, then used as a percentage.
-# Essay score is assumed to already be out of 100.
-#
-# Final score = 0.5 * GPA_component + 0.2 * Volunteer_component + 0.3 * Essay_score
-#
-# - GPA matters most
-# - Essay score matters next
-# - Volunteer work still counts, but less than academics
-
-
-def compute_final_score(gpa: float, volunteer_hours: float, essay_score: float) -> float:
-    gpa_component = (gpa / 4.0) * 100.0
-
-    # Cap volunteer hours so one extreme number does not dominate the score.
-    if volunteer_hours < 0:
-        volunteer_hours = 0
-    if volunteer_hours > 100:
-        volunteer_hours = 100
-
-    volunteer_component = volunteer_hours
-
-    #handle edge cases
-    if essay_score < 0:
-        essay_score = 0
-    if essay_score > 100:
-        essay_score = 100
-
-    final_score = (0.5 * gpa_component) + (0.2 * volunteer_component) + (0.3 * essay_score)
-    return final_score
-
-
-# -----------------------------
-# Parsing input
-# -----------------------------
-# Expected input format: one applicant per line
-# name, gpa, volunteer_hours, essay_score
-# Example:
-# Amina, 3.8, 42, 88
-# Omar, 3.5, 75, 91
-
-
-def parse_applicants(text: str) -> Tuple[List[Dict[str, Any]], str]:
-    applicants: List[Dict[str, Any]] = []
-    errors: List[str] = []
-
-    #handle blank text
-    if text is None:
-        return [], "No input provided."
-
-    raw_lines = text.splitlines()
-    line_number = 1
-
-    while line_number <= len(raw_lines):
-        line = raw_lines[line_number - 1].strip()
-
-        if line == "":
-            line_number += 1
-            continue
-
-        parts = line.split(",")
-        if len(parts) != 4:
-            errors.append(
-                f"Line {line_number}: expected 4 comma-separated values: name, gpa, volunteer_hours, essay_score"
-            )
-            line_number += 1
-            continue
-
-        name = parts[0].strip()
-        gpa_text = parts[1].strip()
-        volunteer_text = parts[2].strip()
-        essay_text = parts[3].strip()
-
-        if name == "":
-            errors.append(f"Line {line_number}: name cannot be empty")
-            line_number += 1
-            continue
-
-        try:
-            gpa = float(gpa_text)
-            volunteer_hours = float(volunteer_text)
-            essay_score = float(essay_text)
-        except ValueError:
-            errors.append(f"Line {line_number}: GPA, volunteer hours, and essay score must be numbers")
-            line_number += 1
-            continue
-
-            #insure that all inputs are correct 
-        
-        if gpa < 0 or gpa > 4.0:
-            errors.append(f"Line {line_number}: GPA must be between 0 and 4.0")
-            line_number += 1
-            continue
-
-        if volunteer_hours < 0:
-            errors.append(f"Line {line_number}: volunteer hours cannot be negative")
-            line_number += 1
-            continue
-
-        if essay_score < 0 or essay_score > 100:
-            errors.append(f"Line {line_number}: essay score must be between 0 and 100")
-            line_number += 1
-            continue
-
-        #save all variables
-        applicants.append(
-            {
-                "name": name,
-                "gpa": gpa,
-                "volunteer_hours": volunteer_hours,
-                "essay_score": essay_score,
-                "final_score": compute_final_score(gpa, volunteer_hours, essay_score),
-            }
-        )
-
-        line_number += 1
-
-    error_text = ""
-    if len(errors) > 0:
-        error_text = "\n".join(errors)
-
-    return applicants, error_text
-
-
-# -----------------------------
-# Manual sorting algorithm
-# -----------------------------
-# We use insertion sort because it is simple to explain and naturally shows
-# the list being rebuilt step by step.
-#
-# Important: no sorted(), no list.sort(), no membership shortcuts.
-# We only use basic loops and comparisons.
-
-
-def insertion_sort_with_steps(applicants: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str], List[List[Dict[str, Any]]]]:
-    arr: List[Dict[str, Any]] = []
-    i = 0
-    while i < len(applicants):
-        arr.append(applicants[i])
-        i += 1
-
-    steps: List[str] = []
-    states: List[List[Dict[str, Any]]] = []
-
-    # Save the initial state.
-    states.append(copy_applicant_list(arr))
-    steps.append("Start with the applicants in the order entered.")
-
-    index = 1
-    while index < len(arr):
-        key_item = arr[index]
-        key_score = key_item["final_score"]
-        position = index - 1
-
-        steps.append(
-            f"Compare {key_item['name']} (score {key_score:.2f}) with the people before them."
-        )
-
-        while position >= 0 and arr[position]["final_score"] < key_score:
-            arr[position + 1] = arr[position]
-            position -= 1
-            states.append(copy_applicant_list(arr))
-            steps.append("Move a lower-scoring applicant one position to the right.")
-
-        arr[position + 1] = key_item
-        states.append(copy_applicant_list(arr))
-        steps.append(f"Insert {key_item['name']} into the correct position.")
-
-        index += 1
-
-    return arr, steps, states
-
-
-def copy_applicant_list(source: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    copied: List[Dict[str, Any]] = []
-    index = 0
-    while index < len(source):
-        item = source[index]
-        copied.append(
-            {
-                "name": item["name"],
-                "gpa": item["gpa"],
-                "volunteer_hours": item["volunteer_hours"],
-                "essay_score": item["essay_score"],
-                "final_score": item["final_score"],
-            }
-        )
-        index += 1
-    return copied
-
-
-# -----------------------------
-# Display helpers
-# -----------------------------
-
-def ranking_table(applicants: List[Dict[str, Any]]) -> List[List[Any]]:
-    rows: List[List[Any]] = []
-    rank = 1
-    index = 0
-    while index < len(applicants):
-        person = applicants[index]
-        rows.append(
-            [
-                rank,
-                person["name"],
-                round(person["gpa"], 2),
-                round(person["volunteer_hours"], 1),
-                round(person["essay_score"], 1),
-                round(person["final_score"], 2),
-            ]
-        )
-        rank += 1
-        index += 1
-    return rows
-
-
-def format_steps(steps: List[str]) -> str:
-    if len(steps) == 0:
-        return ""
-
-    text = ""
-    i = 0
-    while i < len(steps):
-        text += str(i + 1) + ". " + steps[i] + "\n"
-        i += 1
-    return text
-
-
-def format_state(state: List[Dict[str, Any]]) -> str:
-    lines: List[str] = []
-    i = 0
-    while i < len(state):
-        person = state[i]
-        lines.append(f"{i + 1}. {person['name']} — {person['final_score']:.2f}")
-        i += 1
+# =========================
+# FORMAT DISPLAY
+# =========================
+def format_list(arr, highlight=None):
+    """
+    Displays ONE list.
+    Highlights indices being swapped.
+    """
+    lines = []
+    for i, a in enumerate(arr):
+        if highlight and i in highlight:
+            lines.append(f"👉 {i+1}. {a['name']} | {a['score']}")
+        else:
+            lines.append(f"   {i+1}. {a['name']} | {a['score']}")
     return "\n".join(lines)
 
 
-# -----------------------------
-# Main app logic
-# -----------------------------
+# =========================
+# PARTITION (WITH YIELD)
+# =========================
+def partition(arr, low, high):
+    pivot = arr[high]["score"]
+    i = low - 1
 
-def process_applicants(text: str, top_n: int):
-    applicants, error_text = parse_applicants(text)
+    for j in range(low, high):
+        # Comparison pause (optional subtle animation)
+        yield format_list(arr, [j, high])
+        time.sleep(0.2)
 
-    if len(applicants) == 0:
-        message = "No valid applicants were found."
-        if error_text != "":
-            message += "\n\nIssues found:\n" + error_text
-        return message, [], "", ""
+        if arr[j]["score"] >= pivot:
+            i += 1
 
-    sorted_applicants, steps, states = insertion_sort_with_steps(applicants)
+            # SWAP
+            arr[i], arr[j] = arr[j], arr[i]
 
-    if top_n < 1:
-        top_n = 1
-    if top_n > len(sorted_applicants):
-        top_n = len(sorted_applicants)
+            # Show swap
+            yield format_list(arr, [i, j])
+            time.sleep(0.4)
 
-    top_rows: List[List[Any]] = []
-    i = 0
-    while i < top_n:
-        person = sorted_applicants[i]
-        top_rows.append(
-            [
-                i + 1,
-                person["name"],
-                round(person["final_score"], 2),
-            ]
-        )
-        i += 1
+    # Final pivot swap
+    arr[i + 1], arr[high] = arr[high], arr[i + 1]
+    yield format_list(arr, [i + 1, high])
+    time.sleep(0.4)
 
-    full_rows = ranking_table(sorted_applicants)
-
-    summary = "Final scoring formula:\n"
-    summary += "Final score = 0.5 × GPA score + 0.2 × volunteer score + 0.3 × essay score\n\n"
-    summary += "GPA is converted to a 100-point scale, volunteer hours are capped at 100, and essay score is already out of 100."
-
-    if error_text != "":
-        summary += "\n\nIgnored lines / problems found:\n" + error_text
-
-    step_text = format_steps(steps)
-
-    # Show the last sorting state as a simple ranked list.
-    final_state_text = ""
-    if len(states) > 0:
-        final_state_text = "Final ordering process snapshot:\n\n" + format_state(states[len(states) - 1])
-
-    return summary, top_rows, full_rows, step_text + "\n\n" + final_state_text
+    return i + 1
 
 
-# -----------------------------
-# Sample data
-# -----------------------------
-SAMPLE_INPUT = """Amina, 3.8, 42, 88
-Omar, 3.5, 75, 91
-Leila, 3.9, 30, 84
-Noah, 3.2, 90, 79
-Sara, 3.7, 60, 95"""
+# =========================
+# QUICK SORT (GENERATOR)
+# =========================
+def quicksort(arr, low, high):
+    if low < high:
+        gen = partition(arr, low, high)
+
+        # Run partition step-by-step
+        pi = None
+        while True:
+            try:
+                state = next(gen)
+                yield state
+            except StopIteration as e:
+                pi = e.value
+                break
+
+        # Recurse LEFT
+        for state in quicksort(arr, low, pi - 1):
+            yield state
+
+        # Recurse RIGHT
+        for state in quicksort(arr, pi + 1, high):
+            yield state
 
 
-# -----------------------------
-# Gradio UI
-# -----------------------------
-with gr.Blocks(title="Applicant Ranking Simulator") as demo:
-    gr.Markdown(
-        """
-        # Applicant Ranking Simulator
-        Enter applicants one per line using this format:
-        `name, gpa, volunteer_hours, essay_score`
-        The app computes a final score, sorts applicants with a manual insertion sort, and shows the ranking process step by step.
-        """
-    )
+# =========================
+# INPUT PARSING
+# =========================
+def parse_input(text):
+    applicants = []
+    seen = set()
 
-    with gr.Row():
-        input_box = gr.Textbox(
-            label="Applicants",
-            lines=10,
-            value=SAMPLE_INPUT,
-            placeholder="Name, GPA, volunteer_hours, essay_score",
-        )
-        top_n_box = gr.Number(label="Top N to display", value=3, precision=0)
+    if not text.strip():
+        return [], "Empty input."
 
-    run_button = gr.Button("Rank Applicants")
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
 
-    summary_box = gr.Markdown(label="Scoring and validation notes")
-    top_table = gr.Dataframe(
-        headers=["Rank", "Name", "Final Score"],
-        datatype=["number", "str", "number"],
-        label="Top N Applicants",
-        interactive=False,
-        wrap=True,
-    )
-    full_table = gr.Dataframe(
-        headers=["Rank", "Name", "GPA", "Volunteer Hours", "Essay Score", "Final Score"],
-        datatype=["number", "str", "number", "number", "number", "number"],
-        label="Full Ranking",
-        interactive=False,
-        wrap=True,
-    )
-    steps_box = gr.Textbox(label="Sorting steps", lines=18, interactive=False)
+        ##check format
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 4:
+            return [], f"Invalid format: {line}"
 
-    run_button.click(
-        fn=process_applicants,
-        inputs=[input_box, top_n_box],
-        outputs=[summary_box, top_table, full_table, steps_box],
-    )
+        try:
+            name = parts[0]
 
-if __name__ == "__main__":
-    demo.launch()
+            if name in seen:
+                return [], f"Duplicate name: {name}"
+            seen.add(name)
+
+            gpa = float(parts[1])
+            hours = float(parts[2])
+            essay = float(parts[3])
+##make sure all edge cases are covered
+
+            if not (0 <= gpa <= 4):
+                return [], f"GPA must be 0–4: {line}"
+            if hours < 0:
+                return [], f"Hours must be ≥ 0: {line}"
+            if not (0 <= essay <= 100):
+                return [], f"Essay must be 0–100: {line}"
+
+            applicant = {
+                "name": name,
+                "gpa": gpa,
+                "hours": hours,
+                "essay": essay,
+                "score": compute_score({
+                    "gpa": gpa,
+                    "hours": hours,
+                    "essay": essay
+                })
+            }
+
+            applicants.append(applicant)
+
+        except:
+            return [], f"Invalid numbers: {line}"
+
+    return applicants, None
+
+
+# =========================
+# MAIN FUNCTION (STREAMING)
+# =========================
+def run_sort(input_text):
+    applicants, error = parse_input(input_text)
+
+    if error:
+        yield error
+        return
+
+    if not applicants:
+        yield "No applicants."
+        return
+
+    # Initial state
+    yield format_list(applicants)
+    time.sleep(0.5)
+
+    # Animate sorting
+    for state in quicksort(applicants, 0, len(applicants) - 1):
+        yield state
+
+    # Final state
+    yield format_list(applicants)
+
+
+# =========================
+# UI
+# =========================
+demo = gr.Interface(
+    fn=run_sort,
+    inputs=gr.Textbox(
+        lines=10,
+        label="Enter applicants (name,gpa,hours,essay)",
+        placeholder="Alice,3.8,120,85\nBob,3.5,200,90"
+    ),
+    outputs=gr.Textbox(label="Live Ranking"),
+    title="Applicant Ranking",
+    description="Formula: (gpa / 4.0) x 40 + (hours / 200) x 20 + (essay / 100) x 40)."
+)
+
+demo.launch()
